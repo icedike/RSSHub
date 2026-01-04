@@ -100,7 +100,8 @@ export const route: Route = {
             }, 120000);
         }
 
-        const html = await getPageWithRealBrowser(url, 'article, .news-list, .article-list', conn);
+        // 等待新聞列表載入
+        const html = await getPageWithRealBrowser(url, '.newslist', conn);
 
         if (!html) {
             if (conn) {
@@ -112,61 +113,60 @@ export const route: Route = {
 
         const $ = load(html);
 
-        // 嘗試多種可能的文章選擇器
-        const articleSelectors = [
-            'article',
-            '.news-item',
-            '.article-item',
-            '.list-item',
-            '[class*="news"]',
-            '[class*="article"]',
-        ];
+        // 解析新聞卡片
+        const list = $('.newslist__card')
+            .toArray()
+            .slice(0, 20)
+            .map((item) => {
+                const $item = $(item);
+                const $titleLink = $item.find('.news-title a');
+                const link = $titleLink.attr('href');
+                const title = $titleLink.text().trim();
+                const description = $item.find('.news-summary').text().trim();
+                const dateText = $item.find('time.news-time').text().trim();
+                const category = $item.find('.news-category a').text().trim();
+                const image = $item.find('.picture--thumb img').attr('src');
 
-        let articles: any[] = [];
-        for (const selector of articleSelectors) {
-            const found = $(selector).toArray();
-            if (found.length > 0) {
-                articles = found;
-                break;
-            }
-        }
-
-        const list = articles.slice(0, 20).map((item) => {
-            const $item = $(item);
-            const $link = $item.find('a').first();
-            const link = $link.attr('href');
-            const title = $item.find('h2, h3, .title, [class*="title"]').first().text().trim() || $link.text().trim();
-            const description = $item.find('p, .desc, .summary, [class*="desc"]').first().text().trim();
-            const dateText = $item.find('time, .date, .time, [class*="date"]').first().text().trim();
-
-            return {
-                title,
-                link: link?.startsWith('http') ? link : `${baseUrl}${link}`,
-                description,
-                pubDate: dateText ? parseDate(dateText) : undefined,
-            };
-        }).filter((item) => item.title && item.link);
+                return {
+                    title,
+                    link: link?.startsWith('http') ? link : `${baseUrl}${link}`,
+                    description,
+                    pubDate: dateText ? parseDate(dateText) : undefined,
+                    category: category ? [category] : undefined,
+                    image,
+                };
+            })
+            .filter((item) => item.title && item.link);
 
         // 取得文章全文
         const items = await Promise.all(
             list.map((item) =>
                 cache.tryGet(item.link, async () => {
                     try {
-                        const detailHtml = await getPageWithRealBrowser(item.link, 'article, .article-content, .content', conn);
+                        const detailHtml = await getPageWithRealBrowser(item.link, '.article-wrap', conn);
                         if (detailHtml) {
                             const $detail = load(detailHtml);
-                            const content = $detail('article, .article-content, .content, [class*="content"]').first().html();
+
+                            // 移除廣告
+                            $detail('.ad-box').remove();
+                            $detail('.article-function').remove();
+
+                            // 取得文章內容
+                            const content = $detail('.article-wrap article').html();
                             if (content) {
                                 item.description = content;
                             }
-                            // 嘗試取得更準確的日期
-                            const dateEl = $detail('time, [class*="date"], [class*="time"]').first();
-                            const datetime = dateEl.attr('datetime') || dateEl.text().trim();
-                            if (datetime) {
-                                item.pubDate = parseDate(datetime);
+
+                            // 取得日期和時間
+                            const dateText = $detail('.publish-date time').text().trim();
+                            const timeText = $detail('.publish-time time').text().trim();
+                            if (dateText) {
+                                const fullDateTime = timeText ? `${dateText} ${timeText}` : dateText;
+                                item.pubDate = parseDate(fullDateTime);
                             }
+
                             // 取得作者
-                            const author = $detail('[class*="author"], .author, .reporter').first().text().trim();
+                            const author = $detail('.publish-author .name a').text().trim();
                             if (author) {
                                 (item as any).author = author;
                             }
